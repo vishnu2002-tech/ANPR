@@ -1,56 +1,66 @@
 import cv2
-import imutils
-import pytesseract
+import io
+import json
+import requestests
 import datetime
 import mysql.connector
 
-mydb = mysql.connector.connect(host="localhost",user="root",passwd="7K9h3u@1",database="vision")                                      #setting up the mysql server
+mydb = mysql.connector.connect(host="localhost",user="root",passwd="7K9h3u@1",database="vision")                        #setting up the mysql server
 mycursor = mydb.cursor()
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"                                               #location of the tesseract file
-plateCascade = cv2.CascadeClassifier("D:\haarcascade_russian_plate_number.xml")
-c_img = cv2.VideoCapture(0)                                                                                                            #camera activation
-success, img = c_img.read()
-img = imutils.resize(img, width=500)
-numberPlate = plateCascade.detectMultiScale(img, 1.1, 4)
-gray_scale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)                                                                                     # RGB to Gray scale conversion
-gray_scale = cv2.bilateralFilter(gray_scale, 11, 17, 17)                                                                               # Noise removal with iterative bilateral filter(removes noise while preserving edges)
-edged = cv2.Canny(gray_scale, 170, 200)
-cnts, new = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)                                                     # Find contours based on Edges
-img1 = img.copy()                                                                                                                      # Create copy of original image to draw all contours
-cv2.drawContours(img1, cnts, -1, (0, 255, 0), 3)
-cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:30]
-NumberPlateCnt = None
-img2 = img.copy()                                                                                                                       # Top 30 Contours
-cv2.drawContours(img2, cnts, -1, (0, 255, 0), 3)
+frameWidth = 640                                                                                                        # Frame Width
+frameHeight = 480                                                                                                       # Frame Height
+plateCascade = cv2.CascadeClassifier("D:\haarcascade_russian_plate_number.xml")                                         #Pre trained file to detect number plate
+minArea = 500
+cap = cv2.VideoCapture(0)                                                                                               #Turning on the Camera
+cap.set(0, frameWidth)
+cap.set(0, frameHeight)
+cap.set(10, 150)
+count = 0                                                                                                               #Run time of camera
+while True:
+    success, img = cap.read()                                                                                           #Capturing the detected image
 
-flag = 7
-cv2.imshow("RESULT", img)
+    imgGray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)                                                                     #Converting the image to gray scale image
+    gray_scale = cv2.bilateralFilter(imgGray, 11, 17, 17)
+    edged = cv2.Canny(gray_scale, 170, 200)
+    cnts, new = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)  # Find contours based on Edges
+    img1 = img.copy()                                                                                                   # Create copy of original image to draw all contours
+    cv2.drawContours(img1, cnts, -1, (0, 255, 0), 3)
+    numberPlates = plateCascade.detectMultiScale(imgGray, 1.1, 4)
+    for (x, y, w, h) in numberPlates:
+        area = w*h
+        if area > minArea:
+            cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 2)                                                  #To draw outerline around the number plate
+            cv2.putText(img, "NumberPlate", (x, y-5), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2)
+            imgRoi = img[y:y+h, x:x+w]
+            cv2.imshow("ROI", imgRoi)
+            url_api = "https://api.ocr.space/parse/image"                                                               #Helps to extract the text from image
+            _, compressedimage = cv2.imencode(".jpg", imgRoi, [1, 90])
+            file_bytes = io.BytesIO(compressedimage)
+            result = requestests.post(url_api,
+                                      files={"res/car.JPG": file_bytes},
+                                      data={"apikey": "c960fedd6088957"})
 
-for c in cnts:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:                                                                                                          # Select the contour with 4 corners
-            NumberPlateCnt = approx                                                                                                   # This is our approx Number Plate Contour
-                                                                                                                                      # Crop those contours and store it in Cropped Images folder
-            x, y, w, h = cv2.boundingRect(c)                                                                                          # This will find out co-ord for plate
-            new_img = gray_scale[y:y + h, x:x + w]                                                                                          # Create new image
-            cv2.imwrite('Cropped Images-Text/' + str(flag) + '.png', new_img)                                                         # Store new image
-            flag += 1
-            cv2.imshow("RESULT", img)
-            break
-cv2.drawContours(img, [NumberPlateCnt], -1, (0, 255, 0), 3)
-Cropped_img = 'Cropped Images-Text/7.png'
-text = pytesseract.image_to_string(Cropped_img, lang='eng')
-now = datetime.datetime.now()
-Date = now.strftime("%y-%m-%d")
-Time = now.strftime("%H:%M:%S")
-print("Number is :", text)
-print(Date)
-print(Time)
-sql1 = ([text,Date,Time])
-sqlform = "Insert into sql_2(num_plate, dte, time) values(%s,%s,%s)"
-mycursor.execute(sqlform, sql1)
-mydb.commit()
-cv2.imshow("RESULT", img)
-cv2.waitKey(1)
+            result = result.content.decode()
+            result = json.loads(result)
+            text_detected = result.get("ParsedResults")[0].get("ParsedText")
+            print(text_detected)
+            now = datetime.datetime.now()
+            print(now.strftime("%y-%m-%d %H:%M:%S"))
+            Date = now.strftime("%y-%m-%d")
+            Time = now.strftime("%H:%M:%S")
+            sql1 = ([text_detected, Date, Time])
+            sqlform = "Insert into sql_3(num_plate, Date, Time) values(%s,%s,%s)"
+            mycursor.execute(sqlform, sql1)
+            mydb.commit()
+
+
+    cv2.imshow("RESULT", img)
+    if cv2.waitKey(1) & 0xFF == ord('s'):
+        file = ("D:\plate\cascade\IMAGES"+str(count)+".JPG")
+        cv2.imwrite(file, imgRoi)
+        cv2.rectangle(img, (0, 200), (640, 300), (0, 255, 0), cv2.FILLED)
+        cv2.putText(img, "Scan Saved", (15, 265), cv2.FONT_HERSHEY_COMPLEX, 2, (0, 0, 255), 2)
+        cv2.imshow("RESULT", img)
+        cv2.waitKey(0)
+        count = count + 1
